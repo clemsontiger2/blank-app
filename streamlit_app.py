@@ -226,31 +226,49 @@ if hist_fig:
 else:
     st.info("Historical data is not available right now.")
 
-# --- Component indicators ---
+# --- Component indicators with editable overrides ---
 st.divider()
 st.subheader("Component Indicators")
 
-# Build rows of indicator cards (2 per row for readability)
+use_custom = st.toggle("Override with custom values", value=False)
+
+if use_custom:
+    st.caption(
+        "Adjust any indicator below. The composite score (gauge above) "
+        "will recalculate as the equal-weighted average of your values."
+    )
+
+# Collect API defaults and user overrides
+user_scores: list[float] = []
 cols_per_row = 2
 row_cols = st.columns(cols_per_row)
 col_idx = 0
 
 for key, label in INDICATOR_KEYS:
     indicator = data.get(key, {})
-    if not indicator:
-        continue
-
-    score = indicator.get("score")
-    rating = indicator.get("rating", "")
-    if score is None:
-        continue
-
-    ind_rating = rating.replace("_", " ").title()
-    if ind_rating not in RATING_COLORS:
-        ind_rating = _rating_label(score)
-    ind_color = RATING_COLORS.get(ind_rating, "#666")
+    api_score = indicator.get("score")
+    if api_score is None:
+        api_score = 50.0
+    else:
+        api_score = float(api_score)
 
     with row_cols[col_idx % cols_per_row]:
+        if use_custom:
+            user_val = st.slider(
+                label,
+                min_value=0.0,
+                max_value=100.0,
+                value=api_score,
+                step=0.5,
+                key=f"slider_{key}",
+                help=INDICATOR_INFO.get(label, ""),
+            )
+        else:
+            user_val = api_score
+
+        ind_rating = _rating_label(user_val)
+        ind_color = RATING_COLORS.get(ind_rating, "#666")
+
         st.markdown(
             f"""
             <div style="border:1px solid #ddd; border-radius:10px; padding:16px; margin-bottom:12px;">
@@ -259,13 +277,38 @@ for key, label in INDICATOR_KEYS:
                     <span style="background:{ind_color}; color:white; padding:2px 10px;
                                  border-radius:12px; font-size:0.85em;">{ind_rating}</span>
                 </div>
-                <div style="font-size:2em; font-weight:700; margin:6px 0;">{score:.1f}</div>
+                <div style="font-size:2em; font-weight:700; margin:6px 0;">{user_val:.1f}</div>
                 <div style="font-size:0.85em; color:#888;">{INDICATOR_INFO.get(label, "")}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        user_scores.append(user_val)
     col_idx += 1
+
+# Recalculate composite score when overrides are active
+if use_custom and user_scores:
+    custom_score = sum(user_scores) / len(user_scores)
+    st.divider()
+    st.subheader("Custom Composite Score")
+    col_custom_gauge, col_custom_info = st.columns([1, 1])
+    with col_custom_gauge:
+        st.plotly_chart(
+            build_gauge(custom_score, title="Your Custom Index"),
+            use_container_width=True,
+        )
+    with col_custom_info:
+        custom_rating = _rating_label(custom_score)
+        custom_color = RATING_COLORS.get(custom_rating, "#666")
+        st.markdown(
+            f"<h1 style='color:{custom_color}; margin:0;'>{custom_rating}</h1>",
+            unsafe_allow_html=True,
+        )
+        st.metric(
+            label="Custom Score",
+            value=f"{custom_score:.1f}",
+            delta=f"{custom_score - current_score:+.1f} vs CNN",
+        )
 
 # --- Footer ---
 st.divider()
