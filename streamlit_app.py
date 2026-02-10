@@ -182,9 +182,12 @@ color = RATING_COLORS.get(rating_display, "#666")
 
 last_updated = ""
 if timestamp_ms:
-    last_updated = datetime.datetime.fromtimestamp(
-        timestamp_ms / 1000, tz=datetime.timezone.utc
-    ).strftime("%b %d, %Y %H:%M UTC")
+    try:
+        last_updated = datetime.datetime.fromtimestamp(
+            float(timestamp_ms) / 1000, tz=datetime.timezone.utc
+        ).strftime("%b %d, %Y %H:%M UTC")
+    except (ValueError, TypeError, OSError):
+        last_updated = ""
 
 # --- Layout: top row ---
 col_gauge, col_info = st.columns([1, 1])
