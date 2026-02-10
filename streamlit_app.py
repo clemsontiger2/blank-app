@@ -8,7 +8,7 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Fear & Greed Index", page_icon="📊", layout="wide")
+st.set_page_config(page_title="CNN Fear and Greed Index", page_icon="📊", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Helpers
