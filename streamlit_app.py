@@ -181,12 +181,12 @@ if rating_display not in RATING_COLORS:
 color = RATING_COLORS.get(rating_display, "#666")
 
 last_updated = ""
-if timestamp_ms:
+if timestamp_ms is not None:
     try:
-        last_updated = datetime.datetime.fromtimestamp(
-            float(timestamp_ms) / 1000, tz=datetime.timezone.utc
-        ).strftime("%b %d, %Y %H:%M UTC")
-    except (ValueError, TypeError, OSError):
+        ts = float(timestamp_ms) / 1000
+        dt = datetime.datetime.utcfromtimestamp(ts)
+        last_updated = dt.strftime("%b %d, %Y %H:%M UTC")
+    except Exception:
         last_updated = ""
 
 # --- Layout: top row ---
