@@ -1,275 +1,181 @@
-import datetime
+import json
+import os
+import re
+from datetime import date
+from pathlib import Path
 
-import pandas as pd
-import plotly.graph_objects as go
-import requests
 import streamlit as st
+from huggingface_hub import InferenceClient
 
-# ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="CNN Fear and Greed Index", page_icon="📊", layout="wide")
+OUTPUT_DIR = Path('/mnt/user-data/outputs')
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-CNN_API_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+st.set_page_config(page_title='Travel Planner + VQS', page_icon='🧭', layout='wide')
+st.title('🧭 Travel Planner + VQS')
 
-RATING_COLORS = {
-    "Extreme Fear": "#d32f2f",
-    "Fear": "#f57c00",
-    "Neutral": "#fdd835",
-    "Greed": "#7cb342",
-    "Extreme Greed": "#2e7d32",
+DEFAULT_MODEL = 'Qwen/Qwen2.5-72B-Instruct'
+
+WEIGHTS = {
+    'Financial Efficiency': 5,
+    'Loyalty': 4,
+    'Culinary': 4,
+    'Activity': 3,
+    'Friction': 3,
 }
 
-GAUGE_STEPS = [
-    {"range": [0, 25], "color": "#d32f2f"},
-    {"range": [25, 45], "color": "#f57c00"},
-    {"range": [45, 55], "color": "#fdd835"},
-    {"range": [55, 75], "color": "#7cb342"},
-    {"range": [75, 100], "color": "#2e7d32"},
-]
+def tier(vqs: int) -> str:
+    if vqs >= 160:
+        return '🟢 Excellent'
+    if vqs >= 130:
+        return '🟡 Great'
+    if vqs >= 100:
+        return '🟠 Good'
+    if vqs >= 70:
+        return '🔴 Fair'
+    return '⛔ Below Average'
 
+def slugify(s: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')
 
-def _rating_label(score: float) -> str:
-    if score <= 25:
-        return "Extreme Fear"
-    if score <= 45:
-        return "Fear"
-    if score <= 55:
-        return "Neutral"
-    if score <= 75:
-        return "Greed"
-    return "Extreme Greed"
-
-
-@st.cache_data(ttl=300)
-def fetch_fear_greed_data() -> dict | None:
-    """Fetch Fear & Greed data from CNN's API (cached 5 min)."""
-    start_date = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
+def compute_vqs(cost_per_day: int, loyalty: int, culinary: int, activity: int, friction: int):
+    fin = max(1, min(10, round(12 - cost_per_day / 80)))
+    ratings = {
+        'Financial Efficiency': fin,
+        'Loyalty': loyalty,
+        'Culinary': culinary,
+        'Activity': activity,
+        'Friction': friction,
     }
-    try:
-        resp = requests.get(f"{CNN_API_URL}/{start_date}", headers=headers, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as exc:
-        st.error(f"Failed to fetch data from CNN: {exc}")
-        return None
+    weighted = {k: ratings[k] * WEIGHTS[k] for k in ratings}
+    total = sum(weighted.values())
+    return ratings, weighted, total
 
+with st.sidebar:
+    st.header('Trip Inputs')
+    destination = st.text_input('Destination', 'Barcelona, Spain')
+    start = st.date_input('Start date', value=date(2026, 6, 15))
+    end = st.date_input('End date', value=date(2026, 6, 22))
+    travelers = st.number_input('Travelers', min_value=1, max_value=10, value=2)
+    budget_total = st.number_input('Budget total (USD)', min_value=200, value=2800)
+    purpose = st.selectbox('Purpose', ['vacation', 'business', 'special occasion'])
+    st.markdown('### VQS rating inputs')
+    loyalty = st.slider('Loyalty (1-10)', 1, 10, 7)
+    culinary = st.slider('Culinary (1-10)', 1, 10, 8)
+    activity = st.slider('Activity (1-10)', 1, 10, 7)
+    friction = st.slider('Friction (1-10)', 1, 10, 6)
 
-def build_gauge(score: float, title: str = "Current Index") -> go.Figure:
-    """Return a Plotly gauge figure for the given score."""
-    fig = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=score,
-            number={"font": {"size": 52}},
-            title={"text": title, "font": {"size": 18}},
-            gauge={
-                "axis": {"range": [0, 100], "tickwidth": 1},
-                "bar": {"color": "#222"},
-                "steps": GAUGE_STEPS,
-                "threshold": {
-                    "line": {"color": "white", "width": 4},
-                    "thickness": 0.8,
-                    "value": score,
-                },
-            },
-        )
-    )
-    fig.update_layout(height=280, margin={"t": 60, "b": 10, "l": 30, "r": 30})
-    return fig
+    st.markdown('### LLM settings')
+    hf_token = st.text_input('HF_TOKEN', value=os.getenv('HF_TOKEN', ''), type='password')
+    model_id = st.text_input('HF_MODEL', value=os.getenv('HF_MODEL', DEFAULT_MODEL))
 
+n_days = max(1, (end - start).days)
+cost_per_day = int(budget_total / n_days)
+ratings, weighted, vqs = compute_vqs(cost_per_day, loyalty, culinary, activity, friction)
+value_score = vqs / max(1, cost_per_day)
 
-def build_history_chart(data: dict) -> go.Figure | None:
-    """Return a Plotly line chart of historical F&G values."""
-    hist = data.get("fear_and_greed_historical", {}).get("data")
-    if not hist:
-        return None
+st.metric('VQS', f'{vqs} / 190', f'{(vqs/190*100):.1f}% · {tier(vqs)}')
+st.metric('Value Score (VQS ÷ $/day)', f'{value_score:.2f} pts/$')
 
-    df = pd.DataFrame(hist)
-    df["date"] = pd.to_datetime(df["x"], unit="ms")
-    df.rename(columns={"y": "score"}, inplace=True)
-    df.sort_values("date", inplace=True)
+if 'messages' not in st.session_state:
+    st.session_state.messages = [{'role': 'assistant', 'content': 'I can build itineraries and travel deliverables. Click Generate Deliverables.'}]
 
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=df["date"],
-            y=df["score"],
-            mode="lines",
-            line={"width": 2, "color": "#1f77b4"},
-            fill="tozeroy",
-            fillcolor="rgba(31,119,180,0.12)",
-            hovertemplate="Date: %{x|%b %d, %Y}<br>Score: %{y:.1f}<extra></extra>",
-        )
-    )
+for m in st.session_state.messages:
+    with st.chat_message(m['role']):
+        st.markdown(m['content'])
 
-    # Sentiment bands
-    fig.add_hrect(y0=0, y1=25, fillcolor="#d32f2f", opacity=0.07, line_width=0)
-    fig.add_hrect(y0=25, y1=45, fillcolor="#f57c00", opacity=0.07, line_width=0)
-    fig.add_hrect(y0=45, y1=55, fillcolor="#fdd835", opacity=0.07, line_width=0)
-    fig.add_hrect(y0=55, y1=75, fillcolor="#7cb342", opacity=0.07, line_width=0)
-    fig.add_hrect(y0=75, y1=100, fillcolor="#2e7d32", opacity=0.07, line_width=0)
+user_prompt = st.chat_input('Ask for itinerary updates...')
+if user_prompt:
+    st.session_state.messages.append({'role': 'user', 'content': user_prompt})
+    with st.chat_message('assistant'):
+        try:
+            client = InferenceClient(token=hf_token or None)
+            system = 'You are a travel planner. Keep answers concise and actionable.'
+            msgs = [{'role': 'system', 'content': system}] + st.session_state.messages
+            out = client.chat.completions.create(model=model_id, messages=msgs, stream=False, max_tokens=700)
+            answer = out.choices[0].message.content
+        except Exception as exc:
+            answer = f'LLM error: {exc}'
+        st.markdown(answer)
+    st.session_state.messages.append({'role': 'assistant', 'content': answer})
 
-    fig.update_layout(
-        title="Historical Fear & Greed Index (Past Year)",
-        xaxis_title="Date",
-        yaxis_title="Score",
-        yaxis={"range": [0, 100]},
-        height=400,
-        margin={"t": 50, "b": 40, "l": 50, "r": 20},
-        hovermode="x unified",
-    )
-    return fig
+if st.button('Generate Deliverables'):
+    dest_slug = slugify(destination.split(',')[0])
+    date_slug = start.strftime('%b%Y').lower()
 
+    jsx_path = OUTPUT_DIR / f'{dest_slug}-{date_slug}-vqs-dashboard.jsx'
+    html_path = OUTPUT_DIR / f'{dest_slug}-{date_slug}-trip-summary-flyer.html'
+    md_path = OUTPUT_DIR / f'{dest_slug}-{date_slug}-travel-plan.md'
 
-# ---------------------------------------------------------------------------
-# Indicator descriptions
-# ---------------------------------------------------------------------------
-INDICATOR_INFO = {
-    "Market Momentum": "S&P 500 vs its 125-day moving average.",
-    "Stock Price Strength": "Net new 52-week highs vs lows on the NYSE.",
-    "Stock Price Breadth": "Volume of advancing vs declining shares.",
-    "Put and Call Options": "Put/call ratio — high put volume signals fear.",
-    "Market Volatility": "VIX level relative to its 50-day moving average.",
-    "Safe Haven Demand": "Bond returns vs stock returns over 20 days.",
-    "Junk Bond Demand": "Yield spread between junk bonds and investment-grade bonds.",
-}
+    score_rows = '\n'.join([f"<li>{k}: {ratings[k]}/10 × {WEIGHTS[k]} = {weighted[k]}</li>" for k in ratings])
 
-INDICATOR_KEYS = [
-    ("market_momentum_sp500", "Market Momentum"),
-    ("stock_price_strength", "Stock Price Strength"),
-    ("stock_price_breadth", "Stock Price Breadth"),
-    ("put_call_options", "Put and Call Options"),
-    ("market_volatility_vix", "Market Volatility"),
-    ("safe_haven_demand", "Safe Haven Demand"),
-    ("junk_bond_demand", "Junk Bond Demand"),
-]
+    jsx_path.write_text(f"""import React from 'react';
+export default function VQSDashboard() {{
+  return (
+    <div style={{{{padding: 24, fontFamily: 'Georgia'}}}}>
+      <h1>{destination} — VQS {vqs} / 190</h1>
+      <p>{tier(vqs)} · Value Score (VQS ÷ $/day): {value_score:.2f} pts/$</p>
+      <ul>{''.join([f'<li>{k}: {ratings[k]}/10 × {WEIGHTS[k]} = {weighted[k]}</li>' for k in ratings])}</ul>
+    </div>
+  );
+}}
+""")
 
+    html_path.write_text(f"""<!doctype html><html><head><meta charset='utf-8'><title>{destination} summary</title>
+<style>body{{font-family: 'Palatino', serif; padding:24px;}} .badge{{font-size:24px;}}</style></head><body>
+<h1>{destination}</h1><p>{start} to {end} · {n_days} days · {travelers} travelers</p>
+<div class='badge'>{vqs} / 190 · {tier(vqs)}</div>
+<p>Value Score (VQS ÷ $/day): {value_score:.2f} pts/$</p>
+<h2>Top 3 highlights</h2><ol><li>Historic center walking route</li><li>Local food market and tasting</li><li>Sunset viewpoint + dinner</li></ol>
+</body></html>""")
 
-# ---------------------------------------------------------------------------
-# Main UI
-# ---------------------------------------------------------------------------
-st.title("📊 CNN Fear & Greed Index Dashboard")
-st.caption("Real-time market sentiment powered by CNN's Fear & Greed Index")
+    md_path.write_text(f"""# {destination} Travel Plan
 
-data = fetch_fear_greed_data()
+## 1) Trip Overview
+- Dates: {start} to {end}
+- Duration: {n_days} days
+- Travelers: {travelers}
+- Budget: ${budget_total}
+- Purpose: {purpose}
 
-if data is None:
-    st.warning("Unable to load Fear & Greed data. Please try again later.")
-    st.stop()
+## 2) Vacation Quality Score (VQS) Analysis
+- VQS: **{vqs} / 190 ({(vqs/190*100):.1f}%)**
+- Tier: **{tier(vqs)}**
+- Value Score (VQS ÷ $/day): **{value_score:.2f} pts/$**
 
-# --- Current score ---
-fg = data.get("fear_and_greed", {})
-current_score = fg.get("score", 0)
-current_rating = fg.get("rating", _rating_label(current_score))
-previous_close = fg.get("previous_close", current_score)
-timestamp_ms = fg.get("timestamp")
+| Category | Rating | Weight | Weighted Score | Notes |
+|---|---|---:|---:|---|
+| Financial Efficiency | {ratings['Financial Efficiency']}/10 | 5 | {weighted['Financial Efficiency']} | Derived from ${cost_per_day}/day |
+| Loyalty | {ratings['Loyalty']}/10 | 4 | {weighted['Loyalty']} | Airline/hotel fit |
+| Culinary | {ratings['Culinary']}/10 | 4 | {weighted['Culinary']} | Dining quality |
+| Activity | {ratings['Activity']}/10 | 3 | {weighted['Activity']} | Variety + access |
+| Friction | {ratings['Friction']}/10 | 3 | {weighted['Friction']} | Transit complexity |
 
-# Normalise rating to title case for colour lookup
-rating_display = current_rating.replace("_", " ").title()
-if rating_display not in RATING_COLORS:
-    rating_display = _rating_label(current_score)
-color = RATING_COLORS.get(rating_display, "#666")
+## 3) Day-by-Day Itinerary
+- Day 1: Arrival + orientation walk + dinner.
+- Day 2: Landmark tour + local neighborhood food crawl.
+- Day 3: Museum + market + evening show.
 
-last_updated = ""
-if timestamp_ms is not None:
-    try:
-        ts = float(timestamp_ms) / 1000
-        dt = datetime.datetime.utcfromtimestamp(ts)
-        last_updated = dt.strftime("%b %d, %Y %H:%M UTC")
-    except Exception:
-        last_updated = ""
+## 4) Budget Breakdown
+- Accommodation: 40%
+- Food: 25%
+- Activities: 15%
+- Transportation: 15%
+- Misc: 5%
 
-# --- Layout: top row ---
-col_gauge, col_info = st.columns([1, 1])
+## 5) Packing Checklist
+- Passport, adapters, meds, walking shoes, light layers.
 
-with col_gauge:
-    st.plotly_chart(build_gauge(current_score), use_container_width=True)
+## 6) Cultural Do's and Don'ts
+- Learn greeting basics, respect quiet hours, book top attractions ahead.
 
-with col_info:
-    st.markdown("### Sentiment")
-    st.markdown(
-        f"<h1 style='color:{color}; margin:0;'>{rating_display}</h1>",
-        unsafe_allow_html=True,
-    )
-    delta = round(current_score - previous_close, 1)
-    st.metric(label="Score", value=f"{current_score:.1f}", delta=f"{delta:+.1f} vs prev close")
-    if last_updated:
-        st.caption(f"Last updated: {last_updated}")
+## 7) Pre-Trip Preparation Timeline
+- 3 months: passport/visa check
+- 1 month: major bookings
+- 1 week: documents + weather check
 
-    st.markdown(
-        """
-        | Range | Sentiment |
-        |-------|-----------|
-        | 0–25 | Extreme Fear |
-        | 25–45 | Fear |
-        | 45–55 | Neutral |
-        | 55–75 | Greed |
-        | 75–100 | Extreme Greed |
-        """
-    )
+## 8) Practical Information
+- Currency, emergency numbers, local transit app, tipping norms.
+""")
 
-# --- Historical chart ---
-st.divider()
-hist_fig = build_history_chart(data)
-if hist_fig:
-    st.plotly_chart(hist_fig, use_container_width=True)
-else:
-    st.info("Historical data is not available right now.")
-
-# --- Component indicators ---
-st.divider()
-st.subheader("Component Indicators")
-
-# Build rows of indicator cards (2 per row for readability)
-cols_per_row = 2
-row_cols = st.columns(cols_per_row)
-col_idx = 0
-
-for key, label in INDICATOR_KEYS:
-    indicator = data.get(key, {})
-    if not indicator:
-        continue
-
-    score = indicator.get("score")
-    rating = indicator.get("rating", "")
-    if score is None:
-        continue
-
-    ind_rating = rating.replace("_", " ").title()
-    if ind_rating not in RATING_COLORS:
-        ind_rating = _rating_label(score)
-    ind_color = RATING_COLORS.get(ind_rating, "#666")
-
-    with row_cols[col_idx % cols_per_row]:
-        st.markdown(
-            f"""
-            <div style="border:1px solid #ddd; border-radius:10px; padding:16px; margin-bottom:12px;">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <strong>{label}</strong>
-                    <span style="background:{ind_color}; color:white; padding:2px 10px;
-                                 border-radius:12px; font-size:0.85em;">{ind_rating}</span>
-                </div>
-                <div style="font-size:2em; font-weight:700; margin:6px 0;">{score:.1f}</div>
-                <div style="font-size:0.85em; color:#888;">{INDICATOR_INFO.get(label, "")}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    col_idx += 1
-
-# --- Footer ---
-st.divider()
-st.caption(
-    "Data sourced from [CNN Fear & Greed Index](https://www.cnn.com/markets/fear-and-greed). "
-    "This dashboard is for informational purposes only and does not constitute financial advice."
-)
+    st.success('Generated 3 deliverables in /mnt/user-data/outputs')
+    st.code(json.dumps({'jsx': str(jsx_path), 'html': str(html_path), 'md': str(md_path)}, indent=2))

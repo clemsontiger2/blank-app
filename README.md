@@ -1,19 +1,23 @@
-# 🎈 Blank app template
+# Travel Planner + VQS (Hugging Face Space Ready)
 
-A simple Streamlit app template for you to modify!
+This app now focuses on travel planning and generates three required deliverables:
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+1. `*-vqs-dashboard.jsx`
+2. `*-trip-summary-flyer.html`
+3. `*-travel-plan.md`
 
-### How to run it on your own machine
+Output directory: `/mnt/user-data/outputs`
 
-1. Install the requirements
+## Run
 
-   ```
-   $ pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
 
-2. Run the app
+## Deploy
 
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+```bash
+git remote add space https://huggingface.co/spaces/Clemsontiger2k/PersonalAgent
+git push space main
+```

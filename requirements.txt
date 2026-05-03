@@ -1,4 +1,2 @@
 streamlit
-requests
-plotly
-pandas
+huggingface_hub>=0.31.0
